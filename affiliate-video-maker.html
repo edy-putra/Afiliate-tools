@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Affiliate Video Maker</title>
+<style>
+:root{--bg:#eef2f4;--card:#fff;--ink:#14202b;--mut:#5b6b78;--ac:#0f766e;--line:#d5dde2}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:560px;padding:16px;background:var(--bg);color:var(--ink);font:15px/1.45 "Trebuchet MS",system-ui,sans-serif}
+h1{font-size:22px;margin:4px 0 2px}
+.sub{color:var(--mut);font-size:13px;margin:0 0 14px}
+.c{background:var(--card);border-radius:14px;padding:14px;margin-bottom:12px;border:1px solid var(--line)}
+h2{font-size:15px;margin:0 0 6px}
+label{display:block;font-size:12px;color:var(--mut);margin:10px 0 3px}
+input,textarea{width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);font:inherit;color:var(--ink);background:#fff}
+textarea{min-height:90px}
+button{width:100%;padding:13px;border:0;border-radius:10px;background:var(--ac);color:#fff;font:700 15px inherit;margin-top:12px}
+button:disabled{opacity:.5}
+.hook{padding:10px;border:1px solid var(--line);border-radius:8px;margin-top:6px}
+.hook.on{border:2px solid var(--ac);background:#e8f4f2}
+#log{font-size:13px;color:var(--mut);white-space:pre-wrap;margin:8px 0 0}
+canvas{display:none}
+video{width:100%;max-width:300px;display:block;margin:10px auto;border-radius:10px;background:#000}
+a.dl{display:block;text-align:center;padding:13px;border-radius:10px;background:var(--ink);color:#fff;text-decoration:none;font-weight:700}
+details summary{font-size:13px;color:var(--mut)}
+</style></head><body>
+<h1>Affiliate Video Maker</h1>
+<p class="sub">Foto produk → naskah → suara → MP4 9:16 siap upload TikTok.</p>
+
+<div class="c"><h2>1. Produk</h2>
+<label>API key Gemini (dari aistudio.google.com)</label>
+<input id="key" type="password" placeholder="AIza...">
+<details><summary>Model (ubah kalau error)</summary>
+<label>Model teks</label><input id="mdl" value="gemini-2.5-flash">
+<label>Model suara</label><input id="tts" value="gemini-2.5-flash-preview-tts">
+<label>Nama suara</label><input id="voice" value="Kore"></details>
+<label>Nama produk</label><input id="nama">
+<label>Harga / promo</label><input id="harga" placeholder="Rp49.000, diskon 30%">
+<label>Keunggulan (pisahkan koma)</label><textarea id="unggul"></textarea>
+<label>Target pembeli</label><input id="target" placeholder="ibu rumah tangga, mahasiswa, dll">
+<label>Foto produk (boleh banyak)</label><input id="imgs" type="file" accept="image/*" multiple>
+<button id="gen">Buat naskah</button></div>
+
+<div class="c" id="step2" hidden><h2>2. Pilih hook dan edit naskah</h2>
+<div id="hooks"></div>
+<label>Naskah (satu baris = satu adegan)</label><textarea id="script"></textarea>
+<label>Caption + hashtag</label><textarea id="cap"></textarea>
+<button id="mk">Buat video</button></div>
+
+<div class="c" id="step3" hidden><h2>3. Hasil</h2>
+<video id="pv" controls playsinline></video>
+<a id="dl" class="dl">Unduh video</a></div>
+
+<p id="log"></p><canvas id="cv"></canvas>
+
+<script>
+const $=id=>document.getElementById(id);
+const log=t=>$('log').textContent=t;
+let photos=[],data=null,hook=0;
+try{$('key').value=localStorage.gk||''}catch(e){}
+
+$('imgs').onchange=async e=>{
+  photos=await Promise.all([...e.target.files].map(f=>new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.src=URL.createObjectURL(f)})));
+  log(photos.length+' foto dimuat');
+};
+
+async function gem(model,body){
+  const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent',{
+    method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':$('key').value.trim()},body:JSON.stringify(body)});
+  const j=await r.json();
+  if(!r.ok)throw new Error(j.error&&j.error.message||r.status);
+  return j;
+}
+
+$('gen').onclick=async()=>{
+  try{localStorage.gk=$('key').value}catch(e){}
+  if(!$('key').value||!$('nama').value)return log('Isi API key dan nama produk dulu.');
+  log('Membuat naskah...');
+  const p='Kamu copywriter TikTok affiliate Indonesia. Produk: '+$('nama').value+'. Harga: '+$('harga').value+'. Keunggulan: '+$('unggul').value+'. Target: '+$('target').value+
+  '. Buat video 20-30 detik, bahasa Indonesia santai seperti rekomendasi teman, jujur, tanpa klaim berlebihan atau janji medis. Balas JSON: {"hooks":[3 hook berbeda, maks 10 kata],"body":[4-5 kalimat pendek: masalah, solusi, benefit, bukti],"cta":"1 kalimat ajakan klik keranjang kuning","caption":"caption singkat","hashtags":"hashtag"}';
+  try{
+    const j=await gem($('mdl').value,{contents:[{parts:[{text:p}]}],generationConfig:{responseMimeType:'application/json'}});
+    data=JSON.parse(j.candidates[0].content.parts[0].text);
+    hook=0;showHooks();log('Naskah siap. Pilih hook, edit kalau perlu.');
+  }catch(e){log('Gagal: '+e.message)}
+};
+
+function showHooks(){
+  $('hooks').innerHTML=data.hooks.map((h,i)=>'<div class="hook '+(i==hook?'on':'')+'" onclick="hook='+i+';showHooks()">'+h+'</div>').join('');
+  $('script').value=[data.hooks[hook]].concat(data.body,[data.cta]).join('\n');
+  $('cap').value=data.caption+'\n'+data.hashtags;
+  $('step2').hidden=false;
+}
+
+async function tts(text){
+  const j=await gem($('tts').value,{contents:[{parts:[{text:text}]}],generationConfig:{responseModalities:['AUDIO'],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:$('voice').value}}}}});
+  const b=atob(j.candidates[0].content.parts[0].inlineData.data),n=b.length>>1,f=new Float32Array(n);
+  for(let i=0;i<n;i++){let v=b.charCodeAt(2*i)|(b.charCodeAt(2*i+1)<<8);if(v>32767)v-=65536;f[i]=v/32768}
+  return f;
+}
+
+function wrap(g,txt,mw){
+  const w=txt.split(' '),L=[];let c='';
+  for(const x of w){const n=c?c+' '+x:x;if(g.measureText(n).width>mw&&c){L.push(c);c=x}else c=n}
+  L.push(c);return L;
+}
+
+$('mk').onclick=async()=>{
+  if(!photos.length)return log('Upload minimal 1 foto produk dulu.');
+  const lines=$('script').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!lines.length)return log('Naskah kosong.');
+  $('mk').disabled=true;
+  const ac=new AudioContext(),dest=ac.createMediaStreamDestination();
+  let bufs=[],voiced=true;
+  try{
+    for(let i=0;i<lines.length;i++){
+      log('Membuat suara '+(i+1)+'/'+lines.length+'...');
+      const f=await tts(lines[i]);
+      const b=ac.createBuffer(1,f.length,24000);b.copyToChannel(f,0);bufs.push(b);
+    }
+  }catch(e){
+    voiced=false;log('Suara gagal ('+e.message+'). Video dibuat tanpa suara.');
+    bufs=lines.map(l=>({duration:Math.max(2,l.length*.07)}));
+  }
+  const durs=bufs.map(b=>Math.max(b.duration+.35,1.8));
+  const starts=[];let total=0;durs.forEach((d,i)=>{starts[i]=total;total+=d});
+
+  const W=720,H=1280,cv=$('cv');cv.width=W;cv.height=H;
+  const g=cv.getContext('2d');
+  const stream=cv.captureStream(30);
+  dest.stream.getAudioTracks().forEach(t=>stream.addTrack(t));
+  const mt=['video/mp4;codecs=avc1','video/mp4','video/webm;codecs=vp9,opus','video/webm'].find(t=>MediaRecorder.isTypeSupported(t));
+  const rec=new MediaRecorder(stream,{mimeType:mt,videoBitsPerSecond:4000000}),ch=[];
+  rec.ondataavailable=e=>ch.push(e.data);
+  rec.onstop=()=>{
+    const ext=mt.indexOf('mp4')>-1?'mp4':'webm';
+    const url=URL.createObjectURL(new Blob(ch,{type:mt.split(';')[0]}));
+    $('pv').src=url;$('dl').href=url;$('dl').download='video-affiliate.'+ext;
+    $('step3').hidden=false;$('mk').disabled=false;
+    log('Selesai ('+ext.toUpperCase()+').'+(ext=='webm'?' Browser ini hanya mengeluarkan WebM; kalau TikTok menolak, konversi dulu lewat CapCut.':'')+' Caption ada di kolom bagian 2.');
+    ac.close();
+  };
+
+  const lead=.25;
+  await ac.resume();
+  rec.start();
+  const t0=performance.now()+lead*1000;
+  if(voiced)bufs.forEach((b,i)=>{const s=ac.createBufferSource();s.buffer=b;s.connect(dest);s.start(ac.currentTime+lead+starts[i])});
+
+  function draw(){
+    const t=Math.max(0,(performance.now()-t0)/1000);
+    if(t>total+.3){rec.stop();return}
+    let i=0;while(i<lines.length-1&&t>=starts[i]+durs[i])i++;
+    const p=Math.min(1,(t-starts[i])/durs[i]);
+    const im=photos[i%photos.length];
+    const sc=Math.max(W/im.width,H/im.height)*(1+.14*p);
+    const dir=i%2?1:-1;
+    g.fillStyle='#000';g.fillRect(0,0,W,H);
+    g.drawImage(im,(W-im.width*sc)/2+dir*p*24,(H-im.height*sc)/2,im.width*sc,im.height*sc);
+    const gr=g.createLinearGradient(0,H*.5,0,H);gr.addColorStop(0,'rgba(0,0,0,0)');gr.addColorStop(1,'rgba(0,0,0,.75)');
+    g.fillStyle=gr;g.fillRect(0,H*.5,W,H*.5);
+    g.textAlign='center';g.lineJoin='round';
+    const big=i==0;
+    g.font='800 '+(big?64:52)+'px "Trebuchet MS",Arial,sans-serif';
+    const L=wrap(g,lines[i],W-100),lh=big?78:64;
+    let y=(big?H*.42:H*.68)-(L.length*lh)/2;
+    L.forEach(s=>{y+=lh;g.lineWidth=12;g.strokeStyle='#000';g.strokeText(s,W/2,y);g.fillStyle=big?'#ffe14d':'#fff';g.fillText(s,W/2,y)});
+    if(i==lines.length-1&&$('harga').value){
+      g.fillStyle='#e11d48';g.beginPath();g.roundRect(60,90,W-120,100,24);g.fill();
+      g.fillStyle='#fff';g.font='800 46px "Trebuchet MS",Arial,sans-serif';g.fillText($('harga').value,W/2,155);
+    }
+    g.fillStyle='rgba(255,255,255,.85)';g.fillRect(0,H-10,W*(t/total),10);
+    requestAnimationFrame(draw);
+  }
+  log('Merender... jangan tutup atau pindah tab sampai selesai.');
+  draw();
+};
+</script></body></html>
