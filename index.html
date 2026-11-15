@@ -50,6 +50,8 @@ canvas{display:none}
 .bar b{display:block;font:700 15px ui-monospace,Menlo,monospace}
 .bar small{font:13px ui-monospace,Menlo,monospace;color:var(--mut)}
 .bar .btn{min-width:150px;padding:17px 20px;border-radius:22px;font-size:17px}
+  .sn{font-size:14px;padding:6px 4px;color:var(--mut)}
+.sn.ok{color:var(--ok)}
 [hidden]{display:none!important}
 </style></head><body>
 
@@ -93,6 +95,7 @@ canvas{display:none}
 <label class="lab">Naskah (satu baris = satu adegan)</label><textarea id="script"></textarea>
 <div class="two"><div><label class="lab">Suara</label><select id="voice"></select></div>
 <div><label class="lab">Gaya</label><select id="style"></select></div></div>
+<button class="btn wide" id="vo" type="button">Buat suara</button><div id="scn" style="margin-top:8px"></div>
 <label class="lab">Caption + hashtag</label><textarea id="cap" style="min-height:90px"></textarea>
 </div>
 
@@ -114,7 +117,7 @@ const $=id=>document.getElementById(id);
 const P='avm_';
 const ls={g:k=>{try{return localStorage.getItem(P+k)}catch(e){return null}},s:(k,v)=>{try{localStorage.setItem(P+k,v)}catch(e){}},d:k=>{try{localStorage.removeItem(P+k)}catch(e){}}};
 const log=t=>$('log').textContent=t;
-let photos=[],data=null,hook=0,busy=false;
+let photos=[],data=null,hook=0,busy=false,ready=false;
 
 /* tema */
 function theme(m){
@@ -222,9 +225,43 @@ function bar(){
   const L=lines(),sec=Math.round(L.join(' ').length/15);
   $('sc').textContent=L.length+' adegan · ≈ '+sec+' dtk';
   $('vs').textContent=L.length?$('voice').value+' · '+$('style').value:'Buat naskah dulu';
-  $('mk').disabled=!L.length||busy;
+  refresh();
 }
 $('script').oninput=bar;
+
+/* cache suara (IndexedDB) */
+const DB=new Promise(r=>{try{const q=indexedDB.open('avm',1);q.onupgradeneeded=()=>q.result.createObjectStore('a');q.onsuccess=()=>r(q.result);q.onerror=()=>r(null)}catch(e){r(null)}});
+const dbget=async k=>{const d=await DB;return d?new Promise(r=>{const q=d.transaction('a').objectStore('a').get(k);q.onsuccess=()=>r(q.result||null);q.onerror=()=>r(null)}):null};
+const dbput=async(k,v)=>{const d=await DB;if(d)d.transaction('a','readwrite').objectStore('a').put(v,k)};
+const dbdel=async k=>{const d=await DB;if(d)d.transaction('a','readwrite').objectStore('a').delete(k)};
+const mem=new Map(),ckey=t=>$('voice').value+'|'+$('style').value+'|'+t;
+async function getA(t){const k=ckey(t);if(mem.has(k))return mem.get(k);const b=await dbget(k);if(b){const f=new Float32Array(b);mem.set(k,f);return f}return null}
+async function putA(t,f){mem.set(ckey(t),f);await dbput(ckey(t),f.buffer)}
+const esc=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+async function refresh(){
+  const L=lines(),ok=await Promise.all(L.map(async t=>!!(await getA(t))));
+  ready=L.length>0&&ok.every(Boolean);
+  $('scn').innerHTML=L.map((t,i)=>'<div class="sn'+(ok[i]?' ok':'')+'">'+(ok[i]?'✓':'○')+' '+(i+1)+'. '+esc(t.slice(0,48))+(t.length>48?'…':'')+'</div>').join('');
+  const n=ok.filter(Boolean).length;
+  $('vo').textContent=ready?'Buat ulang semua suara':n?'Lanjutkan suara ('+n+'/'+L.length+')':'Buat suara';
+  $('mk').disabled=!ready||busy;$('vo').disabled=!L.length||busy;
+}
+$('vo').onclick=async()=>{
+  const L=lines();if(!L.length||busy)return;
+  if(!key.value.trim())return log('Isi API key dulu.');
+  if(ready){
+    if(!confirm('Buat ulang semua suara? Ini memakai kuota lagi.'))return;
+    for(const t of L){mem.delete(ckey(t));await dbdel(ckey(t))}
+  }
+  busy=true;await refresh();
+  for(let i=0;i<L.length;i++){
+    if(await getA(L[i]))continue;
+    log('Membuat suara '+(i+1)+'/'+L.length+'...');
+    try{await putA(L[i],await tts(L[i]));await refresh()}
+    catch(e){busy=false;await refresh();return log('Berhenti di adegan '+(i+1)+': '+e.message+'\nGanti API key atau model, lalu tekan Lanjutkan. Adegan yang sudah jadi tidak diulang.')}
+  }
+  busy=false;await refresh();log('Semua suara siap. Tekan Buat video.');
+};
 
 async function tts(text){
   const st=$('style').value,t=st=='Netral'?text:'Ucapkan dengan gaya '+st.toLowerCase()+': '+text;
@@ -242,20 +279,11 @@ function wrap(g,txt,mw){
 
 $('mk').onclick=async()=>{
   if(!photos.length)return log('Upload minimal 1 foto produk dulu (Langkah 1).');
-  const L=lines();if(!L.length)return;
+  const L=lines();if(!L.length||!ready)return log('Buat suara dulu di Langkah 2.');
   busy=true;bar();
   const ac=new AudioContext(),dest=ac.createMediaStreamDestination();
-  let bufs=[],voiced=true;
-  try{
-    for(let i=0;i<L.length;i++){
-      log('Membuat suara '+(i+1)+'/'+L.length+'...');
-      const f=await tts(L[i]);
-      const b=ac.createBuffer(1,f.length,24000);b.copyToChannel(f,0);bufs.push(b);
-    }
-  }catch(e){
-    voiced=false;log('Suara gagal ('+e.message+'). Video dibuat tanpa suara.');
-    bufs=L.map(l=>({duration:Math.max(2,l.length*.07)}));
-  }
+  const bufs=[];
+  for(const t of L){const f=await getA(t);const b=ac.createBuffer(1,f.length,24000);b.copyToChannel(f,0);bufs.push(b)}
   const durs=bufs.map(b=>Math.max(b.duration+.35,1.8));
   const starts=[];let total=0;durs.forEach((d,i)=>{starts[i]=total;total+=d});
 
@@ -280,31 +308,37 @@ $('mk').onclick=async()=>{
   await ac.resume();
   rec.start();
   const t0=performance.now()+lead*1000;
-  if(voiced)bufs.forEach((b,i)=>{const s=ac.createBufferSource();s.buffer=b;s.connect(dest);s.start(ac.currentTime+lead+starts[i])});
+  bufs.forEach((b,i)=>{const s=ac.createBufferSource();s.buffer=b;s.connect(dest);s.start(ac.currentTime+lead+starts[i])});
 
+  const vg=g.createRadialGradient(W/2,H/2,H*.35,W/2,H/2,H*.78);
+  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,0,.45)');
+  function scene(i,p,a,punch){
+    const im=photos[i%photos.length],k=i%3;
+    const z=k==1?1.18-.14*p:1+.14*p;
+    const sc=Math.max(W/im.width,H/im.height)*1.06*z*(1+punch);
+    const dx=k==2?(p-.5)*50:(i%2?1:-1)*(p-.5)*40,dy=k==1?(.5-p)*30:0;
+    g.globalAlpha=a;
+    g.drawImage(im,(W-im.width*sc)/2+dx,(H-im.height*sc)/2+dy,im.width*sc,im.height*sc);
+    g.globalAlpha=1;
+  }
   function draw(){
     const t=Math.max(0,(performance.now()-t0)/1000);
     if(t>total+.3){rec.stop();return}
     let i=0;while(i<L.length-1&&t>=starts[i]+durs[i])i++;
-    const p=Math.min(1,(t-starts[i])/durs[i]);
-    const im=photos[i%photos.length];
-    const sc=Math.max(W/im.width,H/im.height)*(1+.14*p);
-    const dir=i%2?1:-1;
+    const lt=t-starts[i],p=Math.min(1,lt/durs[i]),X=.35;
     g.fillStyle='#000';g.fillRect(0,0,W,H);
-    g.drawImage(im,(W-im.width*sc)/2+dir*p*24,(H-im.height*sc)/2,im.width*sc,im.height*sc);
-    const gr=g.createLinearGradient(0,H*.5,0,H);gr.addColorStop(0,'rgba(0,0,0,0)');gr.addColorStop(1,'rgba(0,0,0,.75)');
-    g.fillStyle=gr;g.fillRect(0,H*.5,W,H*.5);
-    g.textAlign='center';g.lineJoin='round';
-    const big=i==0;
-    g.font='800 '+(big?64:52)+'px "Trebuchet MS",Arial,sans-serif';
-    const T=wrap(g,L[i],W-100),lh=big?78:64;
-    let y=(big?H*.42:H*.68)-(T.length*lh)/2;
-    T.forEach(s=>{y+=lh;g.lineWidth=12;g.strokeStyle='#000';g.strokeText(s,W/2,y);g.fillStyle=big?'#ffe14d':'#fff';g.fillText(s,W/2,y)});
-    if(i==L.length-1&&$('harga').value){
-      g.fillStyle='#e11d48';g.beginPath();g.roundRect(60,90,W-120,100,24);g.fill();
-      g.fillStyle='#fff';g.font='800 46px "Trebuchet MS",Arial,sans-serif';g.fillText($('harga').value,W/2,155);
+    if(i>0&&lt<X){scene(i-1,1,1,0);scene(i,p,lt/X,0)}
+    else scene(i,p,1,Math.max(0,.06*(1-lt/.3)));
+    g.fillStyle=vg;g.fillRect(0,0,W,H);
+    if(i>0&&lt<.12){g.fillStyle='rgba(255,255,255,'+(.2*(1-lt/.12))+')';g.fillRect(0,0,W,H)}
+    if(i==L.length-1&&$('harga').value&&lt>.2){
+      const q=Math.min(1,(lt-.2)/.45),e=1+2.70158*Math.pow(q-1,3)+1.70158*Math.pow(q-1,2);
+      g.save();g.translate(W/2,150);g.scale(e,e);
+      g.fillStyle='#e11d48';g.beginPath();g.roundRect(-(W-120)/2,-50,W-120,100,24);g.fill();
+      g.fillStyle='#fff';g.textAlign='center';g.font='800 46px "Trebuchet MS",Arial,sans-serif';g.fillText($('harga').value,0,16);
+      g.restore();
     }
-    g.fillStyle='rgba(255,255,255,.85)';g.fillRect(0,H-10,W*(t/total),10);
+    g.fillStyle='rgba(255,255,255,.8)';g.fillRect(0,H-8,W*(t/total),8);
     requestAnimationFrame(draw);
   }
   log('Merender... jangan tutup atau pindah tab sampai selesai.');
