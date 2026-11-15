@@ -86,6 +86,8 @@ canvas{display:none}
 <input type="file" id="imgs" accept="image/*" multiple hidden>
 <button class="btn" type="button" onclick="$('imgs').click()" style="width:100%">Pilih foto (boleh banyak)</button>
 <div class="thumbs" id="thumbs"></div>
+<label class="lab">Panjang naskah</label>
+<select id="len"><option value="s">Pendek · ≈8 dtk · 1 klip</option><option value="m">Sedang · ≈16 dtk · 2 klip</option><option value="l">Panjang · ≈24 dtk · 3 klip</option></select>
 <button class="btn pri wide" id="gen" type="button">Buat naskah</button>
 </div>
 
@@ -96,6 +98,13 @@ canvas{display:none}
 <div class="two"><div><label class="lab">Suara</label><select id="voice"></select></div>
 <div><label class="lab">Gaya</label><select id="style"></select></div></div>
 <button class="btn wide" id="vo" type="button">Buat suara</button><div id="scn" style="margin-top:8px"></div>
+<label class="lab">Jenis visual</label>
+<div class="seg" id="vseg"><button type="button" data-v="foto" style="flex:1;width:auto;font-size:14px">Slide foto</button><button type="button" data-v="video" style="flex:1;width:auto;font-size:14px">Video bergerak</button></div>
+<div id="pvid" hidden>
+<label class="lab">Model video (Veo)</label>
+<select id="vmS"></select><input type="text" id="vmO" placeholder="contoh: veo-3.1-lite-generate-preview" style="margin-top:10px" hidden>
+<p class="note">Foto diubah jadi klip 8 detik oleh Veo. Veo lewat API berbayar per detik video, terpisah dari kredit Flow dan langganan.</p>
+<button class="btn wide" id="vc" type="button">Buat klip video</button><div id="cscn" style="margin-top:8px"></div></div>
 <label class="lab">Caption + hashtag</label><textarea id="cap" style="min-height:90px"></textarea>
 </div>
 
@@ -159,6 +168,7 @@ if(key.value)$('kbody').hidden=true;
 
 /* model, suara, gaya */
 const MODELS={
+  vm:[['veo-3.1-fast-generate-preview','Veo 3.1 Fast (lebih hemat)'],['veo-3.1-generate-preview','Veo 3.1 (kualitas)']],
   mdl:[['gemini-3.8-flash','Gemini 3.8 Flash (kualitas)'],['gemini-3.5-flash-lite','Gemini 3.5 Flash-Lite (hemat & cepat)']],
   tts:[['gemini-3.8-flash-tts','Gemini 3.8 Flash TTS (kualitas)'],['gemini-3.8-flash-lite-tts','Gemini 3.8 Flash-Lite TTS (hemat & cepat)']]
 };
@@ -172,7 +182,7 @@ function initModel(k){
   sel.onchange=upd;oth.oninput=upd;upd();
 }
 const model=k=>$(k+'S').value=='_o'?($(k+'O').value.trim()||MODELS[k][0][0]):$(k+'S').value;
-initModel('mdl');initModel('tts');
+initModel('mdl');initModel('tts');initModel('vm');
 
 const VOICES=['Zephyr','Puck','Charon','Kore','Fenrir','Leda','Orus','Aoede','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat'];
 const STYLES=['Netral','Ceria','Antusias','Santai','Hangat','Meyakinkan'];
@@ -186,8 +196,79 @@ initPick('voice',VOICES,'Kore');initPick('style',STYLES,'Netral');
 /* foto */
 $('imgs').onchange=async e=>{
   photos=await Promise.all([...e.target.files].map(f=>new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.src=URL.createObjectURL(f)})));
+  pids=[...e.target.files].map(f=>f.name+'-'+f.size+'-'+f.lastModified);
   $('thumbs').innerHTML=photos.map(i=>'<img src="'+i.src+'">').join('');
   log(photos.length+' foto dimuat');
+};
+
+/* jenis visual + klip Veo */
+let vmode=ls.g('vmode')||'foto',vids=[],clipsReady=false,pids=[];
+function setMode(m,r){vmode=m;ls.s('vmode',m);$('pvid').hidden=m!='video';
+  document.querySelectorAll('#vseg button').forEach(b=>b.classList.toggle('on',b.dataset.v==m));if(r)refresh()}
+document.querySelectorAll('#vseg button').forEach(b=>b.onclick=()=>setMode(b.dataset.v,true));
+setMode(vmode);
+$('vmS').addEventListener('change',()=>refresh());
+$('len').value=ls.g('len')||'m';$('len').onchange=()=>ls.s('len',$('len').value);
+const LN=()=>({s:{sec:8,w:22,b:1},m:{sec:16,w:45,b:2},l:{sec:24,w:65,b:3}})[$('len').value];
+
+const memC=new Map(),ckC=i=>'clip|'+model('vm')+'|'+pids[i%pids.length]+'|'+(i%4);
+async function getC(i){if(!pids.length)return null;const k=ckC(i);if(memC.has(k))return memC.get(k);const b=await dbget(k);if(b){memC.set(k,b);return b}return null}
+async function putC(i,b){const k=ckC(i);memC.set(k,b);await dbput(k,b)}
+async function needClips(){
+  let tot=0;
+  for(const t of lines()){const f=await getA(t);tot+=Math.max((f?f.length/24000:2)+.35,1.8)}
+  return Math.max(1,Math.ceil(tot/8));
+}
+function b64(im){const c=document.createElement('canvas'),k=Math.min(1,1280/Math.max(im.width,im.height));c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);c.getContext('2d').drawImage(im,0,0,c.width,c.height);return c.toDataURL('image/jpeg',.9).split(',')[1]}
+const MOVES=['slow push-in towards the product','gentle orbit around the product','slow pan from left to right','slow pull-back reveal'];
+async function veo(i){
+  const base='https://generativelanguage.googleapis.com/v1beta/',h={'Content-Type':'application/json','x-goog-api-key':key.value.trim()};
+  const prompt='Smooth cinematic product shot, '+MOVES[i%4]+', soft studio lighting, realistic motion, no text overlay, no subtitles';
+  let r=await fetch(base+'models/'+model('vm')+':predictLongRunning',{method:'POST',headers:h,body:JSON.stringify({instances:[{prompt:prompt,image:{bytesBase64Encoded:b64(photos[i%photos.length]),mimeType:'image/jpeg'}}],parameters:{aspectRatio:'9:16'}})});
+  let j=await r.json();if(!r.ok)throw new Error(j.error&&j.error.message||r.status);
+  const op=j.name;
+  for(let n=0;n<72&&!j.done;n++){
+    await new Promise(x=>setTimeout(x,5000));
+    r=await fetch(base+op,{headers:h});j=await r.json();
+    if(!r.ok)throw new Error(j.error&&j.error.message||r.status);
+  }
+  if(!j.done)throw new Error('waktu habis menunggu video');
+  if(j.error)throw new Error(j.error.message);
+  const rp=j.response||{};
+  const sm=rp.generateVideoResponse&&rp.generateVideoResponse.generatedSamples&&rp.generateVideoResponse.generatedSamples[0];
+  const uri=sm&&sm.video&&sm.video.uri||rp.generatedVideos&&rp.generatedVideos[0].video.uri;
+  if(!uri)throw new Error('video tidak dikembalikan (mungkin diblokir filter). '+JSON.stringify(rp).slice(0,120));
+  const d=await fetch(uri,{headers:{'x-goog-api-key':key.value.trim()}});
+  if(!d.ok)throw new Error('unduh klip gagal ('+d.status+')');
+  return await d.blob();
+}
+async function crefresh(){
+  if(vmode!='video')return;
+  if(!ready){clipsReady=false;$('cscn').innerHTML='<div class="sn">Selesaikan suara dulu, supaya jumlah klip pas dengan durasinya.</div>';$('vc').textContent='Buat klip video';$('vc').disabled=true;return}
+  const n=await needClips(),ok=await Promise.all(Array.from({length:n},(_,i)=>getC(i).then(Boolean)));
+  clipsReady=ok.every(Boolean);
+  $('cscn').innerHTML=ok.map((o,i)=>'<div class="sn'+(o?' ok':'')+'">'+(o?'✓':'○')+' Klip '+(i+1)+' · foto '+((i%Math.max(1,photos.length))+1)+'</div>').join('');
+  const c=ok.filter(Boolean).length;
+  $('vc').textContent=clipsReady?'Buat ulang klip':c?'Lanjutkan klip ('+c+'/'+n+')':'Buat klip video ('+n+' klip)';
+  $('vc').disabled=busy||!photos.length;
+}
+$('vc').onclick=async()=>{
+  if(busy||!ready)return;
+  if(!key.value.trim())return log('Isi API key dulu.');
+  if(!photos.length)return log('Upload foto dulu (Langkah 1).');
+  const n=await needClips();
+  if(clipsReady){
+    if(!confirm('Buat ulang semua klip? Ini memakai kuota/biaya lagi.'))return;
+    for(let i=0;i<n;i++){memC.delete(ckC(i));await dbdel(ckC(i))}
+  }
+  busy=true;await refresh();
+  for(let i=0;i<n;i++){
+    if(await getC(i))continue;
+    log('Membuat klip '+(i+1)+'/'+n+' (bisa 1-3 menit, jangan tutup halaman)...');
+    try{await putC(i,await veo(i));await refresh()}
+    catch(e){busy=false;await refresh();return log('Berhenti di klip '+(i+1)+': '+e.message+'\nGanti API key atau model, lalu tekan Lanjutkan. Klip yang sudah jadi tidak diulang.')}
+  }
+  busy=false;await refresh();log('Semua klip siap. Tekan Buat video.');
 };
 
 /* Gemini */
@@ -203,7 +284,7 @@ $('gen').onclick=async()=>{
   if(!key.value.trim()||!$('nama').value)return log('Isi API key dan nama produk dulu.');
   $('gen').disabled=true;log('Membuat naskah...');
   const p='Kamu copywriter TikTok affiliate Indonesia. Produk: '+$('nama').value+'. Harga: '+$('harga').value+'. Keunggulan: '+$('unggul').value+'. Target: '+$('target').value+
-  '. Buat video 20-30 detik, bahasa Indonesia santai seperti rekomendasi teman, jujur, tanpa klaim berlebihan atau janji medis. Balas JSON: {"hooks":[3 hook berbeda, maks 10 kata],"body":[4-5 kalimat pendek: masalah, solusi, benefit, bukti],"cta":"1 kalimat ajakan klik keranjang kuning","caption":"caption singkat","hashtags":"hashtag"}';
+  '. Buat video '+LN().sec+' detik. Total naskah (hook terpilih + body + cta) maksimal '+LN().w+' kata, super padat, tiap kalimat maksimal 10 kata, tanpa basa-basi. Bahasa Indonesia santai seperti rekomendasi teman, jujur, tanpa klaim berlebihan atau janji medis. Balas JSON: {"hooks":[3 hook berbeda, maks 10 kata],"body":['+LN().b+' kalimat padat: masalah, solusi, benefit],"cta":"1 kalimat ajakan klik keranjang kuning","caption":"caption singkat","hashtags":"hashtag"}';
   try{
     const j=await gem(model('mdl'),{contents:[{parts:[{text:p}]}],generationConfig:{responseMimeType:'application/json'}});
     data=JSON.parse(j.candidates[0].content.parts[0].text);
@@ -244,7 +325,8 @@ async function refresh(){
   $('scn').innerHTML=L.map((t,i)=>'<div class="sn'+(ok[i]?' ok':'')+'">'+(ok[i]?'✓':'○')+' '+(i+1)+'. '+esc(t.slice(0,48))+(t.length>48?'…':'')+'</div>').join('');
   const n=ok.filter(Boolean).length;
   $('vo').textContent=ready?'Buat ulang semua suara':n?'Lanjutkan suara ('+n+'/'+L.length+')':'Buat suara';
-  $('mk').disabled=!ready||busy;$('vo').disabled=!L.length||busy;
+  await crefresh();
+  $('mk').disabled=!ready||busy||(vmode=='video'&&!clipsReady);$('vo').disabled=!L.length||busy;
 }
 $('vo').onclick=async()=>{
   const L=lines();if(!L.length||busy)return;
@@ -279,9 +361,16 @@ function wrap(g,txt,mw){
 
 $('mk').onclick=async()=>{
   if(!photos.length)return log('Upload minimal 1 foto produk dulu (Langkah 1).');
+  if(vmode=='video'&&!clipsReady)return log('Buat klip video dulu di Langkah 2.');
   const L=lines();if(!L.length||!ready)return log('Buat suara dulu di Langkah 2.');
   busy=true;bar();
   const ac=new AudioContext(),dest=ac.createMediaStreamDestination();
+  if(vmode=='video'){
+    log('Menyiapkan klip...');vids=[];
+    const nc=await needClips();
+    for(let i=0;i<nc;i++){const v=document.createElement('video');v.muted=true;v.playsInline=true;v.preload='auto';
+      await new Promise(r=>{v.onloadedmetadata=r;v.onerror=r;v.src=URL.createObjectURL(memC.get(ckC(i)))});vids.push(v)}
+  }
   const bufs=[];
   for(const t of L){const f=await getA(t);const b=ac.createBuffer(1,f.length,24000);b.copyToChannel(f,0);bufs.push(b)}
   const durs=bufs.map(b=>Math.max(b.duration+.35,1.8));
@@ -310,6 +399,23 @@ $('mk').onclick=async()=>{
   const t0=performance.now()+lead*1000;
   bufs.forEach((b,i)=>{const s=ac.createBufferSource();s.buffer=b;s.connect(dest);s.start(ac.currentTime+lead+starts[i])});
 
+  const segs=[];
+  if(vmode=='video'){let tt=0,k=0;while(tt<total-.05){const v=vids[k%vids.length],d=Math.min(v.duration>0&&isFinite(v.duration)?v.duration:8,total-tt);segs.push({v,s:tt,d});tt+=d;k++}}
+  let cur=-1,pv=null;
+  function cover(el,w,h,a,z){const sc=Math.max(W/w,H/h)*z;g.globalAlpha=a;g.drawImage(el,(W-w*sc)/2,(H-h*sc)/2,w*sc,h*sc);g.globalAlpha=1}
+  function vscene(t){
+    let j=0;while(j<segs.length-1&&t>=segs[j].s+segs[j].d)j++;
+    const sg=segs[j],lt=t-sg.s;
+    if(j!=cur){
+      const prev=cur>=0?segs[cur].v:null;cur=j;
+      try{sg.v.currentTime=0;sg.v.play()}catch(e){}
+      pv=prev&&prev!==sg.v?prev:null;
+    }
+    const z=1.03+.05*(lt/sg.d)+Math.max(0,.06*(1-lt/.3));
+    if(pv&&lt<.35){cover(pv,pv.videoWidth,pv.videoHeight,1,1.08);cover(sg.v,sg.v.videoWidth,sg.v.videoHeight,lt/.35,z)}
+    else{if(pv){pv.pause();pv=null}cover(sg.v,sg.v.videoWidth,sg.v.videoHeight,1,z)}
+    return j>0?lt:99;
+  }
   const vg=g.createRadialGradient(W/2,H/2,H*.35,W/2,H/2,H*.78);
   vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,0,.45)');
   function scene(i,p,a,punch){
@@ -323,14 +429,16 @@ $('mk').onclick=async()=>{
   }
   function draw(){
     const t=Math.max(0,(performance.now()-t0)/1000);
-    if(t>total+.3){rec.stop();return}
+    if(t>total+.3){vids.forEach(v=>v.pause());rec.stop();return}
     let i=0;while(i<L.length-1&&t>=starts[i]+durs[i])i++;
     const lt=t-starts[i],p=Math.min(1,lt/durs[i]),X=.35;
     g.fillStyle='#000';g.fillRect(0,0,W,H);
-    if(i>0&&lt<X){scene(i-1,1,1,0);scene(i,p,lt/X,0)}
+    let flt=lt,fi=i;
+    if(vmode=='video'){flt=vscene(t);fi=1}
+    else if(i>0&&lt<X){scene(i-1,1,1,0);scene(i,p,lt/X,0)}
     else scene(i,p,1,Math.max(0,.06*(1-lt/.3)));
     g.fillStyle=vg;g.fillRect(0,0,W,H);
-    if(i>0&&lt<.12){g.fillStyle='rgba(255,255,255,'+(.2*(1-lt/.12))+')';g.fillRect(0,0,W,H)}
+    if(fi>0&&flt<.12){g.fillStyle='rgba(255,255,255,'+(.2*(1-flt/.12))+')';g.fillRect(0,0,W,H)}
     if(i==L.length-1&&$('harga').value&&lt>.2){
       const q=Math.min(1,(lt-.2)/.45),e=1+2.70158*Math.pow(q-1,3)+1.70158*Math.pow(q-1,2);
       g.save();g.translate(W/2,150);g.scale(e,e);
